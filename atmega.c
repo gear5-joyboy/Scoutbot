@@ -10,7 +10,7 @@
 #define IN1 PB0
 #define IN2 PB1
 #define IN3 PB2
-#define IN4 PB3
+#define IN4 PB4
 
 // ============================================================
 // PWM OUTPUT PINS (PORTD - Physical Pins 18 & 19)
@@ -25,14 +25,19 @@
 // ============================================================
 #define TRIG_PIN PC0
 
-#define OBSTACLE_THRESHOLD_CM   15  // distance below this counts as "obstacle"
+#define OBSTACLE_THRESHOLD_CM   30  // distance below this counts as "obstacle"
 #define OBSTACLE_COOLDOWN_TICKS 30  // Timer2 ticks (~100ms each) => ~3s cooldown
+//#define TURN_SPEED_DIVISOR      2   // slower side's speed = current_speed / this, during a turn.
+// 2 = half speed. Raise it (3, 4...) for a wider/gentler turn,
+// lower it isn't meaningful below 1 (1 = no turn effect at all).
 
-// Global Speed Variable (Default to 100% speed = 255)
-uint8_t current_speed = 255;
+// Global Speed Variable (Default to 40% speed = 102)
+uint8_t current_speed = 102;
 
 // ============================================================
 // PWM INIT — Timer1, Fast PWM 8-bit mode (TOP = 255)
+// OCR1A (pin 19/ENA) drives the LEFT motors' speed
+// OCR1B (pin 18/ENB) drives the RIGHT motors' speed
 // ============================================================
 void PWM_init()
 {
@@ -41,8 +46,8 @@ void PWM_init()
 	TCCR1A = (1 << COM1A1) | (1 << COM1B1) | (1 << WGM10);
 	TCCR1B = (1 << WGM12) | (1 << CS11); // Prescaler = 8
 
-	OCR1A = current_speed; // Pin 19 (ENA)
-	OCR1B = current_speed; // Pin 18 (ENB)
+	OCR1A = current_speed; // Pin 19 (ENA) - LEFT motors
+	OCR1B = current_speed; // Pin 18 (ENB) - RIGHT motors
 }
 
 void set_speed(uint8_t speed_val)
@@ -65,6 +70,12 @@ void set_speed(uint8_t speed_val)
 // exactly like "two wheels stop, the other two keep spinning" -
 // only the channel that got the bad transition misbehaves, the
 // other reverses fine.
+//
+// forward()/backward(): both sides at the same speed (current_speed).
+// left()/right(): a CURVE turn, not a pivot turn - both sides still
+// drive forward, but the inside wheel pair runs at a reduced speed
+// (current_speed / TURN_SPEED_DIVISOR) so the car arcs instead of
+// spinning in place.
 // ============================================================
 void stopMotors()
 {
@@ -75,6 +86,10 @@ void forward()
 {
 	stopMotors();
 	_delay_ms(30); // let both channels fully de-energize first
+
+	OCR1A = current_speed; // left
+	OCR1B = current_speed; // right
+
 	PORTB = (PORTB & ~((1 << IN2) | (1 << IN4))) | (1 << IN1) | (1 << IN3);
 }
 
@@ -82,21 +97,37 @@ void backward()
 {
 	stopMotors();
 	_delay_ms(30);
+
+	OCR1A = current_speed; // left
+	OCR1B = current_speed; // right
+
 	PORTB = (PORTB & ~((1 << IN1) | (1 << IN3))) | (1 << IN2) | (1 << IN4);
 }
 
 void left()
 {
+	// Curve left: right side full speed, left side slowed down.
+	// Both sides still drive FORWARD - this is not a pivot turn.
 	stopMotors();
 	_delay_ms(30);
-	PORTB = (PORTB & ~((1 << IN1) | (1 << IN4))) | (1 << IN2) | (1 << IN3);
+
+	OCR1A = 0; // left  - slower
+	OCR1B = current_speed;                      // right - full speed
+
+	PORTB = (PORTB & ~((1 << IN2) | (1 << IN4))) | (1 << IN1) | (1 << IN3);
 }
 
 void right()
 {
+	// Curve right: left side full speed, right side slowed down.
+	// Both sides still drive FORWARD - this is not a pivot turn.
 	stopMotors();
 	_delay_ms(30);
-	PORTB = (PORTB & ~((1 << IN2) | (1 << IN3))) | (1 << IN1) | (1 << IN4);
+
+	OCR1A = current_speed;                      // left  - full speed
+	OCR1B = 0; // right - slower
+
+	PORTB = (PORTB & ~((1 << IN2) | (1 << IN4))) | (1 << IN1) | (1 << IN3);
 }
 
 // ============================================================
@@ -237,7 +268,12 @@ ISR(INT0_vect)
 			if (obstacle_cooldown == 0)
 			{
 				UART_send('O'); // tell ESP32-CAM: obstacle seen, take a photo
+				_delay_ms(2000);
 				obstacle_cooldown = OBSTACLE_COOLDOWN_TICKS;
+				set_speed(102);
+				backward();
+				_delay_ms(2000);
+				stopMotors();
 			}
 		}
 	}
@@ -272,14 +308,7 @@ int main()
 	Ultrasonic_init();
 
 	sei(); // enable global interrupts
-
-	_delay_ms(500);
-
-	// Default movement: start driving forward as soon as power is applied.
-	// The robot will keep going forward until a command ('S', 'B', 'L', 'R')
-	// arrives over UART and overrides it.
-	forward();
-
+	
 	while (1)
 	{
 		if (UART_available())

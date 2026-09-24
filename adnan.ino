@@ -14,18 +14,19 @@
 #define SIOD_GPIO_NUM     26
 #define SIOC_GPIO_NUM     27
 
-#define Y9_GPIO_NUM       39
-#define Y8_GPIO_NUM       36
-#define Y7_GPIO_NUM       21
-#define Y6_GPIO_NUM       19
-#define Y5_GPIO_NUM       18
-#define Y4_GPIO_NUM        5
-#define Y3_GPIO_NUM        4
-#define Y2_GPIO_NUM       34
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
 
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
+
 
 // =====================================================
 // UART CONNECTION TO ATMEGA32
@@ -35,6 +36,7 @@
 #define ATMEGA_TX 14
 
 HardwareSerial AtmegaSerial(2);
+
 
 // =====================================================
 // GLOBAL OBJECTS & VARIABLES
@@ -49,6 +51,7 @@ uint8_t* photoBuffer = NULL;
 size_t photoLength = 0;
 
 bool obstacleDetected = false;
+
 
 // =====================================================
 // CAMERA INITIALIZATION
@@ -84,10 +87,14 @@ bool initCamera()
 
   config.xclk_freq_hz = 20000000;
 
-  // GC2145 outputs RGB565 raw frame buffer
+  // Now that the pin mapping above is corrected to match the proven-working
+  // reference, plain RGB565 is fine - the earlier corruption was never a
+  // format issue, it was reading the sensor's data bus off the wrong pins.
   config.pixel_format = PIXFORMAT_RGB565;
   config.frame_size = FRAMESIZE_QVGA;
   config.jpeg_quality = 12;
+  config.fb_count = 1;
+  config.grab_mode = CAMERA_GRAB_LATEST; // matches the known-working reference
 
   if (psramFound())
   {
@@ -97,9 +104,6 @@ bool initCamera()
   {
     config.fb_location = CAMERA_FB_IN_DRAM;
   }
-
-  config.fb_count = 1;
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
   Serial.println("Initializing camera...");
 
@@ -114,8 +118,25 @@ bool initCamera()
   sensor_t* sensor = esp_camera_sensor_get();
   Serial.printf("Camera initialized. PID = 0x%04X\n", sensor->id.PID);
 
+  if (sensor->id.PID == 0x2145)
+    Serial.println("Camera sensor = GC2145");
+  else if (sensor->id.PID == 0x26)
+    Serial.println("Camera sensor = OV2640");
+  else
+    Serial.println("Unexpected camera sensor detected - double check board type.");
+
+  // Discard the first frame - right after init it can be a stale/partially
+  // configured frame grabbed before the sensor has fully settled.
+  camera_fb_t* warmup = esp_camera_fb_get();
+  if (warmup)
+  {
+    esp_camera_fb_return(warmup);
+    Serial.println("Discarded warm-up frame");
+  }
+
   return true;
 }
+
 
 // =====================================================
 // CAPTURE PHOTO
@@ -176,6 +197,7 @@ bool capturePhoto()
 
   return true;
 }
+
 
 // =====================================================
 // HOME PAGE
@@ -285,7 +307,7 @@ function checkObstacle() {
     });
 }
 
-setInterval(checkObstacle, 1000);
+setInterval(checkObstacle, 2000);
 </script>
 
 </body>
@@ -294,6 +316,7 @@ setInterval(checkObstacle, 1000);
 
   server.send(200, "text/html", html);
 }
+
 
 // =====================================================
 // PHONE COMMAND
@@ -321,6 +344,7 @@ void handleCommand()
   server.send(200, "text/plain", "OK");
 }
 
+
 // =====================================================
 // SEND PHOTO
 // =====================================================
@@ -344,6 +368,7 @@ void handlePhoto()
   );
 }
 
+
 // =====================================================
 // STATUS
 // =====================================================
@@ -361,6 +386,7 @@ void handleStatus()
   }
 }
 
+
 // =====================================================
 // SETUP
 // =====================================================
@@ -376,7 +402,7 @@ void setup()
   Serial.println("==============================");
 
   // HardwareSerial(2) to ATmega32
-  AtmegaSerial.begin(4800, SERIAL_8N1, ATMEGA_RX, ATMEGA_TX);
+  AtmegaSerial.begin(4800, SERIAL_8N1, ATMEGA_RX, ATMEGA_TX); // must match ATmega32's UBRRL=12 (4800 baud @ 1MHz)
   Serial.println("ATmega UART started");
 
   if (!initCamera())
@@ -384,6 +410,7 @@ void setup()
     Serial.println("Camera initialization failed!");
     return;
   }
+
 
   // ===================================================
   // WIFI ACCESS POINT SETUP WITH STABLE CONFIG
@@ -409,6 +436,9 @@ void setup()
 
   IPAddress IP = WiFi.softAPIP();
 
+  WiFi.setTxPower(WIFI_POWER_11dBm); // lower TX power -> lower peak current draw during transmit bursts
+  WiFi.setSleep(false); // disable modem sleep - avoids wake-up timing jitter coinciding with a camera capture
+
   Serial.println();
   Serial.print("SSID: ");
   Serial.println(AP_SSID);
@@ -416,6 +446,7 @@ void setup()
   Serial.println(AP_PASSWORD);
   Serial.print("IP address: ");
   Serial.println(IP);
+
 
   // ===================================================
   // HTTP SERVER
@@ -429,6 +460,7 @@ void setup()
   server.begin();
   Serial.println("HTTP server started");
 }
+
 
 // =====================================================
 // LOOP
